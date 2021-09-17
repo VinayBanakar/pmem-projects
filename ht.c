@@ -3,9 +3,17 @@
 #include <limits.h>
 #include <string.h>
 #include <libpmemobj.h>
+#include <stdint.h>
+
+#define die(...) do {fprintf(stderr, __VA_ARGS__); exit(1);} while(0)
+
 
 #define TOMBSTONE_MASK (1ULL << 63)
+#define POOL "hashtable"
+#define LAYOUT "hashtable"
 
+
+PMEMobjpool *pool;
 char tmp[2];
 struct entry_s {
 	uint64_t key;
@@ -20,33 +28,65 @@ struct hashtable_s {
 	struct entry_s **table;	
 };
 
+TOID_DECLARE(struct hashtable_s, 0);
+TOID_DECLARE(struct entry_s, 1);
+
 typedef struct hashtable_s hashtable_t;
 
 
 /* Create a new hashtable. */
-hashtable_t *ht_create( int size ) {
+union hashtable_s_toid ht_create( int size ) {
 
-	hashtable_t *hashtable = NULL;
-	int i;
+    //size_t pool_size = size * sizeof(entry_t) + sizeof(hashtable_t) + 8092; // Arbitrary size.
+    size_t pool_size = 10485760; // just put 10 MiB for now, above is too small
 
-	if( size < 1 ) return NULL;
+    pool = pmemobj_open(POOL, LAYOUT);
+    if(!pool){
+	printf("pool_size: %lu\n", pool_size);
+        pool = pmemobj_create(POOL, LAYOUT, pool_size, 0600);
+        if(!pool)
+            die("Couldn't open pool: %m\n");
+    }
+    else {
+	    //TODO: Get hashtable pointer from pool and return.
 
-	/* Allocate the table itself. */
-	if( ( hashtable = malloc( sizeof( hashtable_t ) ) ) == NULL ) {
-		return NULL;
-	}
 
-	/* Allocate pointers to the head nodes. */
-	if( ( hashtable->table = malloc( sizeof( entry_t * ) * size ) ) == NULL ) {
-		return NULL;
-	}
-	for( i = 0; i < size; i++ ) {
-		hashtable->table[i] = NULL;
-	}
+    }
 
-	hashtable->size = size;
+    struct pobj_action actv[2];
+    size_t actv_cnt = 0;
 
-	return hashtable;	
+    // Now reserve the hash table itself.
+    TOID(struct hashtable_s) hashtable = POBJ_RESERVE_NEW(pool, struct hashtable_s, &actv[actv_cnt]);
+    if (TOID_IS_NULL(hashtable)){
+        die("Can't reserve hashtable: %m\n");
+    }
+    actv_cnt++;
+
+    //Now reserve the pointers to the head nodes.
+    //NOTE: You don't bellow it won't create a an array of pointers but actual objects of the given type.
+    //TOID(struct entry_s) entries = POBJ_XRESERVE_ALLOC(pool, struct entry_s, (size_t)(sizeof(entry_t *) * size), &actv[actv_cnt], POBJ_XALLOC_ZERO);
+    //if (TOID_IS_NULL(entries)){
+    //    die("Can't reserve entries: %m\n");
+    //}
+    //actv_cnt++;
+    PMEMoid entries = pmemobj_reserve(pool, &actv[actv_cnt], (size_t)(sizeof(entry_t *) * size), 0);
+    struct entry_s **ent_p = pmemobj_direct(entries);
+    D_RW(hashtable)->table = ent_p;
+
+    //Null initialize your hashtable
+    for( int i = 0; i < size; i++ ) {
+	  ent_p[i] = NULL;
+    }
+   
+    D_RW(hashtable)->size = size;
+   
+   printf("before publish\n"); 
+    //Publish the pool
+    pmemobj_publish(pool, actv, actv_cnt);
+  
+   printf("after publish\n"); 
+    return hashtable;
 }
 
 //Potential collisions -- no time to check this for now!
@@ -91,6 +131,8 @@ hash(hashtable_t hashmap, uint64_t key)
 entry_t *ht_newpair( uint64_t key, char *value ) {
 	entry_t *newpair;
 
+
+
 	if( ( newpair = malloc( sizeof( entry_t ) ) ) == NULL ) {
 		return NULL;
 	}
@@ -114,15 +156,17 @@ void ht_set( hashtable_t *hashtable, uint64_t key, char *value ) {
 	bin = ht_hash( hashtable, key );
 
 	next = hashtable->table[ bin ];
-
-	while( next != NULL && next->key != 0 && key > next->key) {
+	
+	while( next != NULL && key > next->key) {
 		last = next;
 		next = next->next;
 	}
+	
 
 	/* There's already a pair.  Let's replace that string. */
-	if( next != NULL && next->key != 0 && key == next->key ) {
+	if( next != NULL && key == next->key ) {
 
+		
 		free( next->value );
 		next->value = strdup( value );
 
@@ -172,22 +216,28 @@ char *ht_get( hashtable_t *hashtable, uint64_t key ) {
 	
 }
 
+void perf_test(union hashtable_s_toid hashtable){
+
+}
+
 int main( int argc, char **argv ) {
+    int ht_size = 65536;
 
-	//PMEMobjpool *pool = pmemobj_open(POOL, LAYOUT);
-    hashtable_t *hashtable = ht_create( 65536 );
+    TOID(struct hashtable_s) hashtable = ht_create(ht_size);
+    //hashtable_t *hashtable = ht_create( ht_size );
+	hashtable_t *hashtable_p = D_RW(hashtable);
+	ht_set( hashtable_p, 1, "inky" );
+	ht_set( hashtable_p, 2, "pinky" );
+	ht_set( hashtable_p, 3, "blinky" );
+	ht_set( hashtable_p, 4, "floyd" );
+	ht_set( hashtable_p, 1, "loyd" );
 
-	ht_set( hashtable, 1, "inky" );
-	ht_set( hashtable, 2, "pinky" );
-	ht_set( hashtable, 3, "blinky" );
-	ht_set( hashtable, 4, "floyd" );
-	ht_set( hashtable, 1, "loyd" );
+	printf( "%s\n", ht_get( hashtable_p, 1 ) );
+	printf( "%s\n", ht_get( hashtable_p, 2 ) );
+	printf( "%s\n", ht_get( hashtable_p, 3 ) );
+	printf( "%s\n", ht_get( hashtable_p, 4 ) );
+	printf( "%s\n", ht_get( hashtable_p, 1 ) );
 
-	printf( "%s\n", ht_get( hashtable, 1 ) );
-	printf( "%s\n", ht_get( hashtable, 2 ) );
-	printf( "%s\n", ht_get( hashtable, 3 ) );
-	printf( "%s\n", ht_get( hashtable, 4 ) );
-	printf( "%s\n", ht_get( hashtable, 1 ) );
-
+    perf_test(hashtable);
 	return 0;
 }
