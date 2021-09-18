@@ -15,6 +15,17 @@
 
 PMEMobjpool *pool;
 char tmp[2];
+char tm;
+
+extern __inline__ uint64_t rdtsc(void) {
+        uint64_t a, d;
+        double cput_clock_ticks_per_ns = 2.6; //2.6 Ghz TSC
+        uint64_t c;
+        __asm__ volatile ("rdtscp" : "=a" (a), "=c" (c), "=d" (d) : : "memory");
+        return ((d<<32) | a)/cput_clock_ticks_per_ns;
+}
+
+
 struct entry_s {
 	uint64_t key;
 	char *value;
@@ -37,27 +48,23 @@ typedef struct hashtable_s hashtable_t;
 /* Create a new hashtable. */
 union hashtable_s_toid ht_create( int size ) {
 
+    TOID(struct hashtable_s) hashtable;
+
     //size_t pool_size = size * sizeof(entry_t) + sizeof(hashtable_t) + 8092; // Arbitrary size.
     size_t pool_size = 10485760; // just put 10 MiB for now, above is too small
 
     pool = pmemobj_open(POOL, LAYOUT);
     if(!pool){
-	printf("pool_size: %lu\n", pool_size);
+	//Pool doesn't exist
+	printf("==== Initializing pool %s with pool_size- %lu ====\n", POOL, pool_size);
         pool = pmemobj_create(POOL, LAYOUT, pool_size, 0600);
         if(!pool)
             die("Couldn't open pool: %m\n");
-    }
-    else {
-	    //TODO: Get hashtable pointer from pool and return.
-
-
-    }
-
     struct pobj_action actv[2];
     size_t actv_cnt = 0;
 
     // Now reserve the hash table itself.
-    TOID(struct hashtable_s) hashtable = POBJ_RESERVE_NEW(pool, struct hashtable_s, &actv[actv_cnt]);
+    hashtable = POBJ_RESERVE_NEW(pool, struct hashtable_s, &actv[actv_cnt]);
     if (TOID_IS_NULL(hashtable)){
         die("Can't reserve hashtable: %m\n");
     }
@@ -74,6 +81,8 @@ union hashtable_s_toid ht_create( int size ) {
     struct entry_s **ent_p = pmemobj_direct(entries);
     D_RW(hashtable)->table = ent_p;
 
+    actv_cnt++;
+
     //Null initialize your hashtable
     for( int i = 0; i < size; i++ ) {
 	  ent_p[i] = NULL;
@@ -81,16 +90,26 @@ union hashtable_s_toid ht_create( int size ) {
    
     D_RW(hashtable)->size = size;
    
-   printf("before publish\n"); 
     //Publish the pool
     pmemobj_publish(pool, actv, actv_cnt);
-  
-   printf("after publish\n"); 
+     
+    }
+    else {
+	    //Get hashtable pointer from pool and return.
+	 // Get the root of the pool
+	PMEMoid root = pmemobj_root(pool, sizeof(struct hashtable_s)+sizeof(struct entry_s)*5);
+	//PMEMoid root = pmemobj_root(pool, pool_size);
+	//PMEMoid root = pmemobj_root(pool, PMEMOBJ_MIN_POOL);
+	if(OID_IS_NULL(root))
+	       die("Couldn't get root although pool exists: %m\n");
+	union hashtable_s_toid *tmp = pmemobj_direct(root);	
+    	hashtable = *tmp;
+    }
+
     return hashtable;
 }
 
 //Potential collisions -- no time to check this for now!
-/* Hash a string for a particular hash table. */
 int ht_hash( hashtable_t *hashtable, uint64_t key ) {
 
 	unsigned long int hashval;
@@ -127,26 +146,28 @@ hash(hashtable_t hashmap, uint64_t key)
 	return key == 0 ? 1 : key;
 }
 
-/* Create a key-value pair. */
+// Create a key-value pair.
 entry_t *ht_newpair( uint64_t key, char *value ) {
-	entry_t *newpair;
+       
+	struct pobj_action actv[1];
+        size_t actv_cnt = 0;
 
+	TOID(struct entry_s) newpair = POBJ_RESERVE_NEW(pool, struct entry_s, &actv[actv_cnt]);
+        if (TOID_IS_NULL(newpair)){
+             die("Can't reserve newpair: %m\n");
+        }	
+	actv_cnt++;
+    D_RW(newpair)->key = key;
 
-
-	if( ( newpair = malloc( sizeof( entry_t ) ) ) == NULL ) {
+	if( ( D_RW(newpair)->value = strdup( value ) ) == NULL ) {
 		return NULL;
 	}
-    newpair->key = key;
+	D_RW(newpair)->next = NULL;
 
-	if( ( newpair->value = strdup( value ) ) == NULL ) {
-		return NULL;
-	}
-	newpair->next = NULL;
-
-	return newpair;
+	pmemobj_publish(pool, actv, actv_cnt);
+	return D_RW(newpair);
 }
 
-/* Insert a key-value pair into a hash table. */
 void ht_set( hashtable_t *hashtable, uint64_t key, char *value ) {
 	int bin = 0;
 	entry_t *newpair = NULL;
@@ -191,7 +212,6 @@ void ht_set( hashtable_t *hashtable, uint64_t key, char *value ) {
 	}
 }
 
-/* Retrieve a key-value pair from a hash table. */
 char *ht_get( hashtable_t *hashtable, uint64_t key ) {
 	int bin = 0;
 	entry_t *pair;
@@ -204,11 +224,9 @@ char *ht_get( hashtable_t *hashtable, uint64_t key ) {
 		pair = pair->next;
 	}
 
-	/* Did we actually find anything? */
 	if( pair == NULL || pair->key == 0 || key != pair->key) {
-		//return 1
-	       	sprintf(tmp, "%c", 1);
-        	return tmp;
+		tm = 1+'0';
+		return &tm;
 
 	} else {
 		return pair->value;
@@ -216,21 +234,52 @@ char *ht_get( hashtable_t *hashtable, uint64_t key ) {
 	
 }
 
-void perf_test(union hashtable_s_toid hashtable){
+void perf_test(hashtable_t *hashtable)
+{
+	int test_size = 1000;
+	printf("== Test 1: Insert %d keys with variable size values\n", test_size);
+	char *cpString;
+	uint64_t w_begin_time = rdtsc();
+	for(uint64_t i=1; i <=test_size; ++i){
+		cpString=malloc(i*sizeof(char));
+		memset(cpString,'V',i-1);
+		cpString[i]=0;
+		ht_set(hashtable, i, cpString);
+		free(cpString);	
+	}
+	uint64_t w_end_time = rdtsc();
+	printf("== Test 2: Get %d keys with variable size values\n", test_size);
+	uint64_t r_begin_time = rdtsc();
+	for(uint64_t i=1; i <=1000; ++i){
+		printf("%lu -- %s\n", i, ht_get(hashtable, i));	
+	}
+	uint64_t r_end_time = rdtsc();
+	printf(" ==== Total Put time: %lu ns ====\n", w_end_time - w_begin_time);
+	printf(" ==== Total Get time: %lu ns ====\n", r_end_time - r_begin_time);
+	printf(" === Average Put time: %lu ns ====\n", (w_end_time - w_begin_time)/test_size);
+	printf(" === Average Get time: %lu ns ====\n", (r_end_time - r_begin_time)/test_size);
+       	
+	printf("== Test 3: If key is not present return 1\n");
+	printf("%d -- %s\n", 1001, ht_get(hashtable, 1001));
 
+	printf("== Test 4: update key in place \n");
+	ht_set(hashtable, 1000, "Updated");
+	printf("%d -- %s\n", 1000, ht_get(hashtable, 1000));
+
+		
 }
 
 int main( int argc, char **argv ) {
     int ht_size = 65536;
 
-    TOID(struct hashtable_s) hashtable = ht_create(ht_size);
-    //hashtable_t *hashtable = ht_create( ht_size );
+    	TOID(struct hashtable_s) hashtable = ht_create(ht_size);
+	//hashtable_t *hashtable = ht_create( ht_size );
 	hashtable_t *hashtable_p = D_RW(hashtable);
-	ht_set( hashtable_p, 1, "inky" );
-	ht_set( hashtable_p, 2, "pinky" );
-	ht_set( hashtable_p, 3, "blinky" );
-	ht_set( hashtable_p, 4, "floyd" );
-	ht_set( hashtable_p, 1, "loyd" );
+	ht_set( hashtable_p, 1, "Alpha" );
+	ht_set( hashtable_p, 2, "Beta" );
+	ht_set( hashtable_p, 3, "Omega" );
+	ht_set( hashtable_p, 4, "Epsilon" );
+	ht_set( hashtable_p, 1, "===" );
 
 	printf( "%s\n", ht_get( hashtable_p, 1 ) );
 	printf( "%s\n", ht_get( hashtable_p, 2 ) );
@@ -238,6 +287,6 @@ int main( int argc, char **argv ) {
 	printf( "%s\n", ht_get( hashtable_p, 4 ) );
 	printf( "%s\n", ht_get( hashtable_p, 1 ) );
 
-    perf_test(hashtable);
+    perf_test(hashtable_p);
 	return 0;
 }
