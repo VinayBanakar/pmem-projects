@@ -390,7 +390,6 @@ void perf_test(char *path) {
       fprintf(stderr, "transaction aborted: %s\n", pmemobj_errormsg());
     }
     TX_END
-    free(test);
     if (ht_set(pop, *ht1, i, TESToid) == -1) {
       die("Failed!");
       break;
@@ -424,7 +423,6 @@ void perf_test(char *path) {
     fprintf(stderr, "transaction aborted: %s\n", pmemobj_errormsg());
   }
   TX_END
-  free(test);
   if (ht_set(pop, *ht1, 42, TESToid)) {
     val = pmemobj_direct(ht_get(pop, *ht1, 42));
     printf("Updated value of key %d is %s\n ", 42, val);
