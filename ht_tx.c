@@ -4,8 +4,38 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <libpmemobj.h>
+
+#define die(...) do {fprintf(stderr, __VA_ARGS__); exit(1);} while(0)
 
 #define TOMBSTONE_MASK (1ULL << 63)
+#define POOL "hashtable"
+#define LAYOUT "root"
+
+// TODO: a root struct pointing to the hashtables
+// struct root_s {
+
+// };
+
+POBJ_LAYOUT_BEGIN(a);
+POBJ_LAYOUT_TOID(a, struct account);
+POBJ_LAYOUT_END(a);
+
+
+struct entry_s {
+	uint64_t key;
+	char *value;
+	struct entry_s *next;
+};
+typedef struct entry_s entry_t;
+
+struct hashtable_s {
+	int size;
+	struct entry_s **table;	
+};
+typedef struct hashtable_s hashtable_t;
+
+
 
 extern __inline__ uint64_t rdtsc(void) {
 	uint64_t a, d;
@@ -15,52 +45,60 @@ extern __inline__ uint64_t rdtsc(void) {
 	return ((d<<32) | a)/cput_clock_ticks_per_ns;
 }
 
+PMEMobjpool *pool;
+char tm;
 
-char tmp[2];
-struct entry_s {
-	uint64_t key;
-	char *value;
-	struct entry_s *next;
-};
+// Opens the pool and returns the hashtable we are interested in.
+hashtable_t *get_ht(){
+    return NULL;
+}
 
-typedef struct entry_s entry_t;
+// Create a new hashtable in the same pool.
+union hashtable_s_toid ht_create( int size ) {
 
-struct hashtable_s {
-	int size;
-	struct entry_s **table;	
-};
+    size_t pool_size = PMEMOBJ_MIN_POOL; //FIXME: for now.
+    TOID(struct hashtable_s) hashtable;
+    TOID(struct entry_s) entries;
 
-typedef struct hashtable_s hashtable_t;
+    pool = pmemobj_open(POOL, LAYOUT);
+    if(!pool){
+        printf("==== Initializing pool %s with pool_size- %lu ====\n", POOL, pool_size);
+        pool = pmemobj_create(POOL, LAYOUT, pool_size, 0600);
 
+        if(!pool) die("Couldn't open pool: %m\n");
+        //struct pobj_action actv[2];
+        //size_t actv_cnt = 0;
+    }
+    
+    TX_BEGIN(pool){
+        hashtable = TX_NEW(struct hashtable_s);
+        TX_ADD(hashtable); // save it to the undo log to modify it.
 
-/* Create a new hashtable. */
-hashtable_t *ht_create( int size ) {
+        PMEMoid entries_oid = TX_ZALLOC(char, 8 * size); // pointer size.
+        TOID_ASSIGN(entries, entries_oid);
+        TX_ADD(entries);
+        struct entry_s **ent_p = pmemobj_direct(entries_oid);
+        //TX_ADD_DIRECT(**ent_p);
+        
+        // TOOD: Can we remove this? As we are doing ZALLOC
+        //Null initialize your hashtable
+        for( int i = 0; i < size; i++ ) {
+	        ent_p[i] = NULL;
+            //D_RW(ent_p[i]) = NULL;
+        }
 
-	hashtable_t *hashtable = NULL;
-	int i;
+        D_RW(hashtable)->table = ent_p;
+        D_RW(hashtable)->size = size;
 
-	if( size < 1 ) return NULL;
-
-	/* Allocate the table itself. */
-	if( ( hashtable = malloc( sizeof( hashtable_t ) ) ) == NULL ) {
-		return NULL;
-	}
-
-	/* Allocate pointers to the head nodes. */
-	if( ( hashtable->table = malloc( sizeof( entry_t * ) * size ) ) == NULL ) {
-		return NULL;
-	}
-	for( i = 0; i < size; i++ ) {
-		hashtable->table[i] = NULL;
-	}
-
-	hashtable->size = size;
+    } TX_ONABORT {
+        fprintf(stderr, "%s: transaction aborted: %s\n", __func__, pmemobj_errormsg());
+        abort();
+    } TX_END
 
 	return hashtable;	
 }
 
 //Potential collisions -- no time to check this for now!
-/* Hash a string for a particular hash table. */
 int ht_hash( hashtable_t *hashtable, uint64_t key ) {
 
 	unsigned long int hashval;
@@ -175,8 +213,8 @@ char *ht_get( hashtable_t *hashtable, uint64_t key ) {
 	/* Did we actually find anything? */
 	if( pair == NULL || pair->key == 0 || key != pair->key) {
 		//return 1
-	       	sprintf(tmp, "%c", 1);
-        	return tmp;
+	       	tm = 1+'0';
+        	return &tm;
 
 	} else {
 		return pair->value;
@@ -225,7 +263,8 @@ hashtable_t *ht_expand(hashtable_t *hashtable, int new_size){
 // and have a method for moving data between hash tables by 
 // atomically removing the entry from one table and adding it to the second.
 // Move data from ht1 to ht2 which are of same size.
-bool ht_move(hashtable_t *ht1, hashtable_t *ht2){
+// TODO: handle program crashes in the middle
+bool ht_migrate(hashtable_t *ht1, hashtable_t *ht2){
 	// atomically move data
 	if(ht1->size != ht2->size) return false;
 
@@ -281,7 +320,8 @@ void perf_test(hashtable_t *hashtable)
 int main( int argc, char **argv ) {
 
 	//PMEMobjpool *pool = pmemobj_open(POOL, LAYOUT);
-    hashtable_t *hashtable = ht_create( 6 );
+    //hashtable_t *hashtable = ht_create( 6 );
+    TOID(struct hashtable_s) hashtable = ht_create( 6 );
 
 	ht_set( hashtable, 1, "Alpha" );
 	ht_set( hashtable, 2, "Beta" );
@@ -303,7 +343,7 @@ int main( int argc, char **argv ) {
 
 	// Moving data to another hash table
 	hashtable_t *ht3 = ht_create(8);
-	if( !ht_move(ht2, ht3) )
+	if( !ht_migrate(ht2, ht3) )
 		printf("Moving data between ht failed!!");
 	
 	printf( "%s\n", ht_get(ht3, 3 ) );

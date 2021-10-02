@@ -1,0 +1,322 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+ #include <unistd.h>
+#include <libpmemobj.h>
+
+
+POBJ_LAYOUT_BEGIN(httx);
+POBJ_LAYOUT_ROOT(httx, struct root);
+//POBJ_LAYOUT_ROOT(httx, uint64_t); // To indicate incomplete migration caused by crash.
+POBJ_LAYOUT_END(httx)
+
+#define HASHTABLE_TX_TYPE_OFFSET 1004
+#define HASH_FUNC_COEFF_P 32212254719ULL // large prime number for hash coefficient
+#define POOL_SIZE (1024*1024*1024) // Allocate one big pool; not dynamicaly resizing pool yet.
+//#define POOL_SIZE PMEMOBJ_MIN_POOL 
+#define MIN_HASHSET_THRESHOLD 5
+#define MAX_HASHSET_THRESHOLD 10
+
+#define die(...) do {fprintf(stderr, __VA_ARGS__); exit(1);} while(0)
+
+struct hashtable_s;
+TOID_DECLARE(struct hashtable_s, HASHTABLE_TX_TYPE_OFFSET + 0);
+struct entry;
+struct buckets;
+TOID_DECLARE(struct buckets, HASHTABLE_TX_TYPE_OFFSET + 1);
+TOID_DECLARE(struct entry, HASHTABLE_TX_TYPE_OFFSET + 2);
+
+//prototypes
+void ht_alloc(PMEMobjpool*, TOID(struct hashtable_s)*, uint32_t, size_t);
+void ht_expand(PMEMobjpool*, TOID(struct hashtable_s), size_t);
+
+struct entry {
+	uint64_t key;
+	PMEMoid value;
+	TOID(struct entry) next;
+	//POBJ_LIST_ENTRY(struct entry) next;
+};
+
+struct buckets {
+	size_t nbuckets; // number of buckets
+	TOID(struct entry) bucket[]; // array of lists
+};
+
+struct hashtable_s {
+	uint32_t seed; // Random number generator
+
+	//hash function coefficients
+	uint32_t hash_fun_a;
+	uint32_t hash_fun_b;
+	uint64_t hash_fun_p;
+
+	uint64_t size;
+	// uint64_t uuid; // A unique id to identify this HT.
+	TOID(struct buckets) buckets;
+};
+
+struct root{
+    TOID(struct hashtable_s ) hashtable;
+	TOID(struct hashtable_s ) tmp_hashtable;
+	// NOTE: Ideally this should be a list of hash tables -- alas, no time!
+	//TOID(struct hashtable_s) ht_list[];
+	// REVIEW: One option is to maintain two HTs 
+	// to endure crashes during migration.
+};
+
+PMEMobjpool *pop;
+
+// Initialize the pool and hashtable
+// If the bucket size passed is more than previous then it'll auto expand the table
+TOID(struct hashtable_s)* init_pool_ht(const char* path, size_t buck_sz) {
+
+	//TOID(struct hashtable_s)* hashtable;
+
+    if(access(path, F_OK) != 0){
+        pop = pmemobj_create(path, POBJ_LAYOUT_NAME(httx), POOL_SIZE, 0666);
+        if (pop == NULL) {
+			fprintf(stderr, "failed to create pool: %s\n",
+					pmemobj_errormsg());
+            // return 1;
+			die("Exit");
+		}
+    } else {
+		pop = pmemobj_open(path, POBJ_LAYOUT_NAME(httx));
+		if (pop == NULL) {
+			fprintf(stderr, "failed to open pool: %s\n",
+					pmemobj_errormsg());
+			// return 1;
+            die("Exit");
+		}
+    }
+	TOID(struct root) root = POBJ_ROOT(pop, struct root);
+	if (TOID_IS_NULL(D_RO(root)->hashtable)) {
+		// create new it table doesn't exist.
+		ht_alloc(pop, &D_RW(root)->hashtable, 0, buck_sz);
+	}
+
+	// Expand the table 
+	if(D_RW(D_RW(D_RW(root)->hashtable)->buckets)->nbuckets < buck_sz)
+		ht_expand(pop, D_RW(root)->hashtable, buck_sz);
+	return &D_RW(root)->hashtable;
+}
+
+
+void ht_alloc(PMEMobjpool *pop, TOID(struct hashtable_s)* hashtable, uint32_t seed, size_t bucket_sz)
+{
+	size_t len = bucket_sz;
+	size_t sz = sizeof(struct buckets) +
+			len * sizeof(TOID(struct entry));
+
+	TX_BEGIN(pop) {
+		*hashtable = TX_NEW(struct hashtable_s);
+		TX_ADD(*hashtable);
+
+		D_RW(*hashtable)->seed = seed;
+		do {
+			D_RW(*hashtable)->hash_fun_a = (uint32_t)rand();
+		} while (D_RW(*hashtable)->hash_fun_a == 0);
+		D_RW(*hashtable)->hash_fun_b = (uint32_t)rand();
+		D_RW(*hashtable)->hash_fun_p = HASH_FUNC_COEFF_P;
+
+		D_RW(*hashtable)->buckets = TX_ZALLOC(struct buckets, sz);
+		D_RW(D_RW(*hashtable)->buckets)->nbuckets = len;
+	} TX_ONABORT {
+		fprintf(stderr, "%s: transaction aborted: %s\n", __func__,
+			pmemobj_errormsg());
+		abort();
+	} TX_END
+}
+
+/**
+* hash -- A simple hashing function,
+* see https://en.wikipedia.org/wiki/Universal_hashing#Hashing_integers
+*/
+uint64_t hash(const TOID(struct hashtable_s) *hashtable,
+	TOID(struct buckets) *buckets, uint64_t value)
+{
+	uint32_t a = D_RO(*hashtable)->hash_fun_a;
+	uint32_t b = D_RO(*hashtable)->hash_fun_b;
+	uint64_t p = D_RO(*hashtable)->hash_fun_p;
+	size_t len = D_RO(*buckets)->nbuckets;
+
+	return ((a * value + b) % p) % len;
+}
+
+
+/**
+ * Returns 0/1 if set, -1 if something failed. Updated value in place.
+*/
+int ht_set(PMEMobjpool *pop, TOID(struct hashtable_s) hashtable,
+	uint64_t key, PMEMoid value)
+{
+	TOID(struct buckets) buckets = D_RO(hashtable)->buckets;
+	TOID(struct entry) buck;
+	//TOID(char) str;
+
+	uint64_t h = hash(&hashtable, &buckets, key);
+	int num = 0;
+	int ret = 0;
+
+	for (buck = D_RO(buckets)->bucket[h];
+			!TOID_IS_NULL(buck);
+			buck = D_RO(buck)->next) 
+	{
+		if (D_RO(buck)->key == key){
+			// Update the value.
+			TX_BEGIN(pop) {
+				TX_ADD_DIRECT(&D_RW(buck)->value);
+				//TOID_ASSIGN(str, D_RW(buck)->value);
+				//TX_FREE(str); 
+				// REVIEW: Super weird that it can't be freed from persistent pointer!
+				D_RW(buck)->value = value;
+				ret = 1;
+			} TX_ONABORT {
+				fprintf(stderr, "transaction aborted: %s\n",
+				pmemobj_errormsg());
+				ret = -1;
+			} TX_END
+		}
+		num++;
+	}
+
+	if (ret) return ret;
+
+	TX_BEGIN(pop) {
+		TX_ADD_FIELD(D_RO(hashtable)->buckets, bucket[h]);
+		TX_ADD_FIELD(hashtable, size);
+
+		TOID(struct entry) e = TX_NEW(struct entry);
+		D_RW(e)->key = key;
+		D_RW(e)->value = value;
+		D_RW(e)->next = D_RO(buckets)->bucket[h];
+		D_RW(buckets)->bucket[h] = e;
+
+		D_RW(hashtable)->size++;
+		num++;
+		ret = 0;
+	} TX_ONABORT {
+		fprintf(stderr, "transaction aborted: %s\n",
+			pmemobj_errormsg());
+		ret = -1;
+	} TX_END
+
+	if (ret) return ret;
+
+	// if (num > MAX_HASHSET_THRESHOLD ||
+	// 		(num > MIN_HASHSET_THRESHOLD &&
+	// 		D_RO(hashtable)->size > 2 * D_RO(buckets)->nbuckets))
+	// 	ht_expand(pop, hashtable, D_RO(buckets)->nbuckets * 2);
+
+	return 0;
+}
+
+void ht_expand(PMEMobjpool *pop, TOID(struct hashtable_s) hashtable, size_t new_len)
+{
+	TOID(struct buckets) buckets_old = D_RO(hashtable)->buckets;
+
+	if (new_len == 0)
+		new_len = D_RO(buckets_old)->nbuckets;
+
+	size_t sz_old = sizeof(struct buckets) +
+			D_RO(buckets_old)->nbuckets *
+			sizeof(TOID(struct entry));
+	size_t sz_new = sizeof(struct buckets) +
+			new_len * sizeof(TOID(struct entry));
+
+	TX_BEGIN(pop) {
+		TX_ADD_FIELD(hashtable, buckets);
+		TOID(struct buckets) buckets_new = TX_ZALLOC(struct buckets, sz_new);
+		D_RW(buckets_new)->nbuckets = new_len;
+		// log the entire bucket range as on ABORT any changes to it will be reverted.
+		pmemobj_tx_add_range(buckets_old.oid, 0, sz_old);
+
+		// Move all the old bucket entries to new bucket
+		for (size_t i = 0; i < D_RO(buckets_old)->nbuckets; ++i) {
+			while (!TOID_IS_NULL(D_RO(buckets_old)->bucket[i])) {
+				TOID(struct entry) en = D_RO(buckets_old)->bucket[i];
+				uint64_t h = hash(&hashtable, &buckets_new,D_RO(en)->key);
+				D_RW(buckets_old)->bucket[i] = D_RO(en)->next;
+				TX_ADD_FIELD(en, next);
+				D_RW(en)->next = D_RO(buckets_new)->bucket[h];
+				D_RW(buckets_new)->bucket[h] = en;
+			}
+		}
+
+		D_RW(hashtable)->buckets = buckets_new;
+		// Safe to free the bucket now.
+		TX_FREE(buckets_old);
+	} TX_ONABORT {
+		fprintf(stderr, "%s: transaction aborted: %s\n", __func__,
+			pmemobj_errormsg());
+			// If transaction fails nothing to do as old buckets remain intact.
+	} TX_END
+}
+
+PMEMoid ht_get(PMEMobjpool *pop, TOID(struct hashtable_s) hashtable_s, uint64_t key)
+{
+	TOID(struct buckets) buckets = D_RO(hashtable_s)->buckets;
+	TOID(struct entry) buck;
+
+	uint64_t h = hash(&hashtable_s, &buckets, key);
+
+	for (buck = D_RO(buckets)->bucket[h];
+			!TOID_IS_NULL(buck);
+			buck = D_RO(buck)->next)
+		if (D_RO(buck)->key == key)
+			return D_RO(buck)->value;
+
+	return OID_NULL;
+}
+
+
+void ht_migrate()
+
+TOID_DECLARE(char, 0);
+int main(int argc, char* argv[]){
+
+    const char* path = argv[1];
+    TOID(struct hashtable_s)* ht = init_pool_ht(path, 10);
+
+	//char* test = "The Hitchhiker's Guide to the Galaxy\0";
+
+	//int ax = ht_set(pop, *ht, 42, TESToid );
+	//char* val = pmemobj_direct(ht_get(pop, *ht, 42));
+	//printf("%s\n", val);
+
+	char* test;
+	for(int i=1; i<10000; i++) {
+		PMEMoid TESToid;
+		test = calloc(i, sizeof(char));
+		memset(test, 'V',i-1);
+		TX_BEGIN(pop){
+			TESToid = TX_STRDUP(test, 0);
+		} TX_ONABORT {
+			fprintf(stderr, "transaction aborted: %s\n",
+				pmemobj_errormsg());
+		} TX_END
+		//printf("Started set\n");
+		if(ht_set(pop, *ht, i, TESToid) == -1){
+			die("Failed!");
+			break;
+		}
+	}
+
+	for(int i=1; i<10000; i++){
+		char* val = pmemobj_direct(ht_get(pop, *ht, i));
+		printf("%s\n", val);
+	}
+
+	// close the pool before next call.
+	pmemobj_close(pop);
+
+	// TOID(struct hashtable_s)* ht2 = init_pool_ht(path, 100);
+	// for(int i=1; i<1000; i++){
+	// 	char* val = pmemobj_direct(ht_get(pop, *ht2, i));
+	// 	printf("%s\n", val);
+	// }
+
+	//char* val = pmemobj_direct(ht_get());
+
+	//pmemobj_direct for value from PMEMoid
+}

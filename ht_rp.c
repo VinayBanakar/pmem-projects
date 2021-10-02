@@ -71,7 +71,7 @@ union hashtable_s_toid ht_create( int size ) {
     actv_cnt++;
 
     //Now reserve the pointers to the head nodes.
-    //NOTE: You don't bellow it won't create a an array of pointers but actual objects of the given type.
+    //NOTE:Bellow it won't create a an array of pointers but actual objects of the given type.
     //TOID(struct entry_s) entries = POBJ_XRESERVE_ALLOC(pool, struct entry_s, (size_t)(sizeof(entry_t *) * size), &actv[actv_cnt], POBJ_XALLOC_ZERO);
     //if (TOID_IS_NULL(entries)){
     //    die("Can't reserve entries: %m\n");
@@ -97,7 +97,7 @@ union hashtable_s_toid ht_create( int size ) {
     else {
 	    //Get hashtable pointer from pool and return.
 	 // Get the root of the pool
-	PMEMoid root = pmemobj_root(pool, sizeof(struct hashtable_s)+sizeof(struct entry_s)*5);
+	PMEMoid root = pmemobj_root(pool, sizeof(struct hashtable_s));
 	//PMEMoid root = pmemobj_root(pool, pool_size);
 	//PMEMoid root = pmemobj_root(pool, PMEMOBJ_MIN_POOL);
 	if(OID_IS_NULL(root))
@@ -265,9 +265,8 @@ void perf_test(hashtable_t *hashtable)
 	printf("== Test 4: update key in place \n");
 	ht_set(hashtable, 1000, "Updated");
 	printf("%d -- %s\n", 1000, ht_get(hashtable, 1000));
-
-		
 }
+
 
 int main( int argc, char **argv ) {
     int ht_size = 65536;
