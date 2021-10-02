@@ -298,11 +298,6 @@ PMEMoid ht_get(PMEMobjpool *pop, TOID(struct hashtable_s) hashtable_s, uint64_t 
 // Migrating data atomically from ht1 to ht2 and all ht2 will be erased.
 // During migration if system crashes the new changes will not be commited.
 int ht_migrate(TOID(struct hashtable_s) ht1, TOID(struct hashtable_s) ht2){
-    // Loop through
-    // Get the entry from bucket
-    // create new entry to put it new bucket
-    // increement hashtable size
-    // assign bucket to ht2.
 
     int finished = 0;
     TOID(struct buckets) buckets_ht1 = D_RO(ht1)->buckets;
@@ -434,10 +429,13 @@ voit perf_test(){
     TOID(struct hashtable_s)* ht4 = init_pool_ht(path,1, 20);
     pmemobj_close(pop);
     printf("== Hash table with the following UUID and size are created:\n");
-    printf("\t ht_%d -- %d\n", ht2->uuid, ht2->size);
+    printf("\t ht_%lu -- %lu\n", D_RO(ht2)->uuid, D_RO(ht2)->size); //ht2->buckets->nbuckets?
     
-    printf("==== Test 5: Expanding the hashtable\n");
+    printf("==== Test 5: Expanding the hashtable ====\n");
     TOID(struct hashtable_s)* ht1 = init_pool_ht(path, 1, 20); // Notice this was 10 before.
+	printf("*** Now the the hashtable size of %lu is %lu\n", D_RO(ht1)->uuid, D_RO(ht1)->size);
+
+    printf("==== Test 6: Migrating the hashtable ====\n");	
 	for(int i=1; i<10000; i++){
         PMEMoid valp = ht_get(pop, *ht2, i);
         if(!OID_IS_NULL(valp)){
@@ -449,15 +447,14 @@ voit perf_test(){
 	}
 
     printf("==== Test 6: Migrating to existing hash table")
-
-    if(ht_migrate(*ht, *ht2)){
-        printf("==== Migration from ht1 and ht2 is complete ====\n");
+    if(ht_migrate(*ht1, *ht4)){
+        printf("*** Migration from ht1 and ht4 is complete ***\n");
     } else {
-        die("==== Migration from ht1 and ht2 failed ====\n");
+        die("*** Migration from ht1 and ht2 failed ***\n");
     }
-
+	printf("\tNow reading data from new hash table:\n")
 	for(int i=1; i<1000; i++){
-        PMEMoid valp = ht_get(pop, *ht2, i);
+        PMEMoid valp = ht_get(pop, *ht4, i);
         if(!OID_IS_NULL(valp)){
 		    char* val = pmemobj_direct(valp);
 		    printf("%s\n", val);
