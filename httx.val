@@ -1,0 +1,67 @@
+==268775== Number of stores not made persistent: 1
+==268775== Stores not made persistent properly:
+==268775== [0]    at 0x10ADE4: ht_migrate (ht_tx_buggy.c:329)
+==268775==    by 0x10BAAE: perf_test (ht_tx_buggy.c:474)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591bd2f8     size: 16        state: DIRTY
+==268775== Total memory not made persistent: 16
+==268775==
+==268775== Number of stores made without adding to transaction: 12
+==268775== Stores made without adding to transactions:
+==268775== [0]    at 0x1099D1: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10AF1F: main (ht_tx_buggy.c:351)
+==268775==      Address: 0x53c0550      size: 8
+==268775== [1]    at 0x1099D4: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10AF1F: main (ht_tx_buggy.c:351)
+==268775==      Address: 0x53c0550      size: 16
+==268775== [2]    at 0x1099D1: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B151: perf_test (ht_tx_buggy.c:376)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x53c0560      size: 8
+==268775== [3]    at 0x1099D4: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B151: perf_test (ht_tx_buggy.c:376)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x53c0560      size: 16
+==268775== [4]    at 0x1099D1: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B703: perf_test (ht_tx_buggy.c:435)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0570     size: 8
+==268775== [5]    at 0x1099D4: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B703: perf_test (ht_tx_buggy.c:435)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0570     size: 16
+==268775== [6]    at 0x1099D1: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B795: perf_test (ht_tx_buggy.c:439)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0580     size: 8
+==268775== [7]    at 0x1099D4: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B795: perf_test (ht_tx_buggy.c:439)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0580     size: 16
+==268775== [8]    at 0x1099D1: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B827: perf_test (ht_tx_buggy.c:443)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0590     size: 8
+==268775== [9]    at 0x1099D4: ht_alloc (ht_tx_buggy.c:146)
+==268775==    by 0x1097F6: init_pool_ht (ht_tx_buggy.c:131)
+==268775==    by 0x10B827: perf_test (ht_tx_buggy.c:443)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591c0590     size: 16
+==268775== [10]    at 0x10ADE0: ht_migrate (ht_tx_buggy.c:329)
+==268775==    by 0x10BAAE: perf_test (ht_tx_buggy.c:474)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591bd2f8     size: 8
+==268775== [11]    at 0x10ADE4: ht_migrate (ht_tx_buggy.c:329)
+==268775==    by 0x10BAAE: perf_test (ht_tx_buggy.c:474)
+==268775==    by 0x10B0EF: main (ht_tx_buggy.c:371)
+==268775==      Address: 0x591bd2f8     size: 16
+==268775== ERROR SUMMARY: 13 errors

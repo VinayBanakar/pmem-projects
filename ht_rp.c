@@ -234,7 +234,7 @@ char *ht_get(hashtable_t *hashtable, uint64_t key) {
 }
 
 void perf_test(hashtable_t *hashtable) {
-  int test_size = 1000;
+  int test_size = 1;
   printf("== Test 1: Insert %d keys with variable size values\n", test_size);
   char *cpString;
   uint64_t w_begin_time = rdtsc();
@@ -248,7 +248,7 @@ void perf_test(hashtable_t *hashtable) {
   uint64_t w_end_time = rdtsc();
   printf("== Test 2: Get %d keys with variable size values\n", test_size);
   uint64_t r_begin_time = rdtsc();
-  for (uint64_t i = 1; i <= 1000; ++i) {
+  for (uint64_t i = 1; i <= 1; ++i) {
     printf("%lu -- %s\n", i, ht_get(hashtable, i));
   }
   uint64_t r_end_time = rdtsc();
@@ -260,11 +260,11 @@ void perf_test(hashtable_t *hashtable) {
          (r_end_time - r_begin_time) / test_size);
 
   printf("== Test 3: If key is not present return 1\n");
-  printf("%d -- %s\n", 1001, ht_get(hashtable, 1001));
+  printf("%d -- %s\n", 1001, ht_get(hashtable, 11));
 
   printf("== Test 4: update key in place \n");
   ht_set(hashtable, 1000, "Updated");
-  printf("%d -- %s\n", 1000, ht_get(hashtable, 1000));
+  printf("%d -- %s\n", 1, ht_get(hashtable, 1));
 }
 
 int main(int argc, char **argv) {
